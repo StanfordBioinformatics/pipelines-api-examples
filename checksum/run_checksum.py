@@ -15,16 +15,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-run_decrypt.py
+"""Python sample demonstrating use of the Google Genomics Pipelines API.
 
-This script decrypts and unpacks files stored in Google Storage.  
+This sample demonstrates running a pipeline to compress or decompress
+a file that is in Google Cloud Storage.
+
+This sample demonstrates running the pipeline in an "ephemeral" manner;
+no call to pipelines.create() is necessary. No pipeline is persisted
+in the pipelines list.
 
 Usage:
-  * python run_fastqc.py \
+  * python run_compress.py \
       --project <project-id> \
       --zones <gce-zones> \
       --disk-size <size-in-gb> \
+      --operation <compression-operation> \
       --input <gcs-input-path> \
       --output <gcs-output-path> \
       --logging <gcs-logging-path> \
@@ -32,6 +37,16 @@ Usage:
 
 Where the poll-interval is optional (default is no polling).
 
+Users will typically want to restrict the Compute Engine zones to avoid Cloud
+Storage egress charges. This script supports a short-hand pattern-matching
+for specifying zones, such as:
+
+  --zones "*"                # All zones
+  --zones "us-*"             # All US zones
+  --zones "us-central1-*"    # All us-central1 zones
+
+an explicit list may be specified, space-separated:
+  --zones us-central1-a us-central1-b
 """
 
 import argparse
@@ -51,10 +66,13 @@ parser.add_argument("--disk-size", required=True, type=int,
                     help="Size (in GB) of disk for both input and output")
 parser.add_argument("--zones", required=True, nargs="+",
                     help="List of Google Compute Engine zones (supports wildcards)")
-parser.add_argument("--input", required=True, nargs="+",
-                    help="Cloud Storage path to input file(s)")
+parser.add_argument("--operation", required=False, default="gzip",
+                    choices=[ "md5sum", "sha1sum"],
+                    help="Choice of hash command")
+parser.add_argument("--input", required=True, nargs=2,
+		    help="Cloud Storage path to checksum file and hashed file, in that order")
 parser.add_argument("--output", required=True,
-                    help="Cloud Storage path to write output files")
+                    help="Cloud Storage path to output file (with the .gz extension)")
 parser.add_argument("--logging", required=True,
                     help="Cloud Storage path to send logging output")
 parser.add_argument("--poll-interval", default=0, type=int,
@@ -65,9 +83,8 @@ args = parser.parse_args()
 credentials = GoogleCredentials.get_application_default()
 service = build('genomics', 'v1alpha2', credentials=credentials)
 
-
-encrypted_file = args.input[0].split("/")[-1]
-
+checksum = args.input[0].split("/")[-1]
+file = args.input[1].split("/")[-1]
 
 # Run the pipeline
 operation = service.pipelines().run(body={
@@ -79,8 +96,8 @@ operation = service.pipelines().run(body={
 
   'ephemeralPipeline': {
     'projectId': args.project,
-    'name': 'fastqc',
-    'description': 'Run "FastQC" on one or more files',
+    'name': 'compress',
+    'description': 'Check the hash of a file',
 
     # Define the resources needed for this pipeline.
     'resources': {
@@ -99,12 +116,14 @@ operation = service.pipelines().run(body={
 
     # Specify the Docker image to use along with the command
     'docker': {
-      'imageName': 'gcr.io/%s/gs_decrypt' % args.project,
+      'imageName': 'ubuntu', # Stock ubuntu contains the gzip, bzip2 commands
 
-      # The Pipelines API will create the input directory when localizing files,
-      # but does not create the output directory.
-      'cmd': ('mkdir -p /mnt/data/output && decrypt.sh %s %s' % (encrypted_file, args.output)),
-
+      'cmd': ('cd /mnt/data/workspace && '
+              'hash=`cat %s | cut -f1 -d\' \'`; echo $hash\'  \'%s > checksum.fixed &&'
+              '%s -c checksum.fixed > %s.check &&'
+              'ls | grep -v %s.check | xargs rm -f' % (checksum, file, args.operation, file, file)),
+              #'%s -c checksum.fixed > %s.check'  % (checksum, checksum, args.operation, file)),
+              #'hash=`cat %s | cut -f1 -d\' \'`; echo $hash\'  \'%s > checksum.fixed' % (checksum, file)),
     },
 
     # The Pipelines API currently supports full GCS paths, along with patterns (globs),
@@ -117,39 +136,39 @@ operation = service.pipelines().run(body={
     #   'name': 'inputFile0',
     #   'description': 'Cloud Storage path to an input file',
     #   'localCopy': {
-    #     'path': 'input/',
+    #     'path': 'workspace/',
     #     'disk': 'datadisk'
     #   }
     # }, {
     #   'name': 'inputFile1',
     #   'description': 'Cloud Storage path to an input file',
     #   'localCopy': {
-    #     'path': 'input/',
+    #     'path': 'workspace/',
     #     'disk': 'datadisk'
     #   }
     # <etc>
     # } ],
 
     # The inputFile<n> specified in the pipelineArgs (see below) will specify the
-    # Cloud Storage path to copy to /mnt/data/input/.
+    # Cloud Storage path to copy to /mnt/data/workspace/.
 
     'inputParameters': [ {
       'name': 'inputFile%d' % idx,
       'description': 'Cloud Storage path to an input file',
       'localCopy': {
-        'path': 'input/',
+        'path': 'workspace/',
         'disk': 'datadisk'
       }
     } for idx in range(len(args.input)) ],
 
     # By specifying an outputParameter, we instruct the pipelines API to
-    # copy /mnt/data/output/* to the Cloud Storage location specified in
+    # copy /mnt/data/workspace/* to the Cloud Storage location specified in
     # the pipelineArgs (see below).
     'outputParameters': [ {
       'name': 'outputPath',
-      'description': 'Cloud Storage path for where to write output',
+      'description': 'Cloud Storage path for where to FastQC output',
       'localCopy': {
-        'path': 'output/*',
+        'path': 'workspace/*',
         'disk': 'datadisk'
       }
     } ]
@@ -160,8 +179,6 @@ operation = service.pipelines().run(body={
 
     # Override the resources needed for this pipeline
     'resources': {
-      'minimumRamGb': 1, # For this example, override the 3.75 GB default
-
       # Expand any zone short-hand patterns
       'zones': defaults.get_zones(args.zones),
 
@@ -183,7 +200,7 @@ operation = service.pipelines().run(body={
       'inputFile%d' % idx : value for idx, value in enumerate(args.input)
     },
 
-    # Pass the user-specified Cloud Storage destination path of the FastQC output
+    # Pass the user-specified Cloud Storage destination path of output
     'outputs': {
       'outputPath': args.output
     },
