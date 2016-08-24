@@ -66,7 +66,7 @@ Now we can push it to Google
 gcloud docker push gcr.io/gbsc-gcp-project-mvp/pipeline_demo
 ```
 
-## Pipeliens API
+## Pipelines API
 
 Once we have our custom image set we can run the pipeline using the Pipelines API
 
