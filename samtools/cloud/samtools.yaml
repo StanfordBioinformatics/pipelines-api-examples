@@ -23,7 +23,7 @@ resources:
 
 # Specify the Docker image to use along with the command
 docker:
-  imageName: gcr.io/YOUR-PROJECT-ID/samtools
+  imageName: gcr.io/gbsc-gcp-project-mvp/samtools
 
   # The Pipelines API will create the input directory when localizing files,
   # but does not create the output directory.
@@ -31,8 +31,10 @@ docker:
     mkdir /mnt/data/output &&
     find /mnt/data/input &&
     for file in $(/bin/ls /mnt/data/input); do
-      samtools index /mnt/data/input/${file} /mnt/data/output/${file}.bai;
+      samtools index /mnt/data/input/${file} /mnt/data/input/${file}.bai;
+      samtools flagstat /mnt/data/input/${file} > /mnt/data/output/${file}.flagstat.tsv;
     done
+
 
 # The Pipelines API currently supports GCS paths, along with patterns (globs),
 # but it doesn't directly support a list of files being passed as a single input
